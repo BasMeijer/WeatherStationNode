@@ -1,6 +1,7 @@
-// ----------------
-// LIBRARY INCLUDES
-// ----------------
+// ----------------------------------------------------
+// LIB IMPORTS
+// ----------------------------------------------------
+
 #include <Wire.h>
 #include <SPI.h>
 #include <ESP8266WiFi.h>
@@ -11,10 +12,10 @@
 #include "DHT.h"
 #include "MQ135.h"
 
+// ----------------------------------------------------
+// PIN & SENSOR DEFINITIONS 
+// ----------------------------------------------------
 
-// ----------------
-// PIN DEFINITIONS
-// ----------------
 // DHT PINS
 #define DHTPIN 2
 #define DHTTYPE DHT22
@@ -28,27 +29,17 @@
 // RAIN PINS
 int nRainIn = A0;
 int nRainDigitalIn = D6;
-int nRainVal;
-boolean bIsRaining = false;
-String strRaining;
 
 // HALL PINS
 int hallSensorPin = D7;
-int state = 0;
 
-// Wind speed
-int windspeed;
-int rounds;
-
-// Loop Counter
-int loopCount = 0;
 
 Adafruit_BMP280 bme; // I2C
 DHT dht(DHTPIN, DHTTYPE);
 
-// ----------------
-// WIFI SETTINGS 
-// ----------------
+// ----------------------------------------------------
+// WIFI & NETWORK SETTINGS
+// ----------------------------------------------------
 
 byte ledPin = 2;
 char ssid[] = "PinguHotspot";               // SSID of your home WiFi
@@ -57,28 +48,53 @@ char password[] = "basbas1337";               // password of your home WiFi
 IPAddress server(192, 168, 43, 198);       // the fix IP address of the server
 WiFiClient client;
 
-// ----------------
-// DATA TYPES
-// ----------------
-// SENSOR READINGS
+// ----------------------------------------------------
+// DATA VARIABLES & SENSOR  READINGS
+// ----------------------------------------------------
+
 float humidity;
 float temperature_DHT;
 float temperature_BMP;
 float airPressure;
 float pressureAltitude;
-float airspeed = 5;
+// Rain Sensor
+int nRainVal;
+boolean bIsRaining = false;
+String strRaining;
+// Hall Sensor
+int state = 0;
+// Air Speed
+float airspeed  = 0;
+int rounds = 0;
+int windReading = 0;
 // json string
 String dataToSend;
 
-// Runs at startup, initialze sensors and connect to wifi network.
+// MAIN LOOP INTERVAL // CURRENTLY 1 MIN
+const unsigned long intervalTime = 1 * 60 * 1000UL;
+static unsigned long lastSampleTime = 0 - intervalTime;  // initialize such that a reading is due the first time through loop()
+
+
+// ----------------------------------------------------
+// HOMESTATION OUTSIDE STARTUP FUNCTIONS
+// ----------------------------------------------------
+
 void setup() {
   Serial.begin(115200);
+  
   dht.begin();
+  
   pinMode(2,INPUT);
   pinMode(LED_BUILTIN, OUTPUT);
   
   connectToWifiNetwork();
+
+  delay(2000);
 }
+
+// ----------------------------------------------------
+// MAIN LOOP FUNCTIONALITY
+// ----------------------------------------------------
 
 void loop() {
 
@@ -86,57 +102,69 @@ void loop() {
     Serial.println("Could not find a valid BMP280 sensor, check wiring!");
     while (1);
   }
-
-  // Read sensor values
-  humidity = dht.readHumidity();
-  temperature_DHT = dht.readTemperature();
-  temperature_BMP = bme.readTemperature();
-  airPressure = bme.readPressure();
-  pressureAltitude = bme.readAltitude(1015);
-  bIsRaining = !(digitalRead(nRainDigitalIn));
-
-  // Build the json format 
-  dataToSend = buildDataFormat();
-  Serial.println(dataToSend); 
-
+  
+  // Hall / AirSpeed RPM calculations
   state = digitalRead(hallSensorPin);
 
-//  if (state == LOW) {
-//    Serial.println("low");
-//  } 
-//  else {
-//    Serial.println("high");
-//  }
-
-
-  if(loopCount > 200){
-    Serial.println("Haaai");
-    loopCount = 0;  
-  }else{
-    loopCount += 1;
+  if (state == LOW) {
+    if(windReading != 1){
+      rounds +=1;
+      Serial.println("New anemometer round");
+      Serial.println(rounds);
     }
-  sendDataToHub();
-
-  // Delay at which to send data to main hub.
-  delay(10000);
-}
-
-void calculateWindSpeed() {
-
-  // FIX ROUNDS
-  int fixed_rounds = rounds;
-  
-  windspeed = (2*3,14*60)*fixed_rounds; // mm/min (2*pi*straal)
-  windspeed = windspeed * 10; // from 6 seconds to 60 seconds
-  windspeed = windspeed/1000000; // km/min
-  windspeed = windspeed*60; // km/hour
-  
-  if (windspeed > 130) {
-    windspeed = 0;
+    windReading = 1;
+  } 
+  else {
+     windReading = 0;
   }
 
-  Serial.print("Read wind speed, speed=");
-  Serial.println(windspeed); 
+  // RUNS EVERY MINUTE DEFINED BY THE INTERVALTIME
+  unsigned long now = millis();
+   if (now - lastSampleTime >= intervalTime)
+   {
+    lastSampleTime += intervalTime;
+      
+    Serial.println("Sending Data");
+  
+    // Read sensor values
+    humidity = dht.readHumidity();
+    temperature_DHT = dht.readTemperature();
+    temperature_BMP = bme.readTemperature();
+    airPressure = bme.readPressure();
+    pressureAltitude = bme.readAltitude(1015);
+    bIsRaining = !(digitalRead(nRainDigitalIn));
+    calculateAirSpeed();
+
+    delay(1000);
+    
+    // Build the json format 
+    dataToSend = buildDataFormat();
+    Serial.println(dataToSend); 
+  
+    sendDataToHub();
+    delay(5000);
+   }
+}
+
+void calculateAirSpeed() {
+  // reset the airspeed before calculating
+  airspeed = 0;
+  
+  Serial.println("Calculating wind speed");
+  Serial.print("RPM=");
+  Serial.println(rounds);
+  
+  airspeed = (2*3,14*140)*rounds; // mm/min (2*pi*straal)
+
+  airspeed = airspeed/1000000; // bereken km/min
+
+  airspeed = airspeed*60; // km/hour
+
+  Serial.print("Read airspeed, speed=");
+  Serial.println(airspeed);
+
+  // reset the rounds for next readings.
+  rounds = 0;
 }
 
 void connectToWifiNetwork() {
@@ -160,7 +188,6 @@ void sendDataToHub(){
   digitalWrite(ledPin, LOW);    // to show the communication only (inverted logic)
   client.println(dataToSend);  // sends the message to the server
   String answer = client.readStringUntil('\r');   // receives the answer from the sever
-  Serial.println("from server: " + answer);
   client.flush();
   digitalWrite(ledPin, HIGH);
 }
