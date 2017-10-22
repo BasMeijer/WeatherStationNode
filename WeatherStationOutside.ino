@@ -33,7 +33,6 @@ int nRainDigitalIn = D6;
 // HALL PINS
 int hallSensorPin = D7;
 
-
 Adafruit_BMP280 bme; // I2C
 DHT dht(DHTPIN, DHTTYPE);
 
